@@ -1,4 +1,4 @@
-import os
+
 import re
 from datetime import timedelta
 
@@ -19,9 +19,6 @@ async def dynamic_prefix(bot_instance, message):
         return "!"
     if content.startswith("-"):
         return "-"
-    # منع تشغيل التايم بدون ! مع إبقاء بقية الاختصارات بدون بادئة.
-    if content.startswith(("t ", "t\n")):
-        return "!"
     return ""
 
 bot = commands.Bot(
@@ -256,11 +253,25 @@ def parse_duration(value: str) -> timedelta | None:
 
 @bot.event
 async def on_ready():
+    # تسجيل الـ Views الدائمة مرة واحدة فقط.
     if not getattr(bot, "_faq_initialized", False):
         bot.add_view(PublicFAQView())
         bot.add_view(TicketPanel())
-        await bot.tree.sync()
         bot._faq_initialized = True
+
+    # مزامنة أوامر السلاش عالميًا، ثم نسخها ومزامنتها مباشرةً لكل سيرفر
+    # حتى تظهر في قائمة / داخل السيرفر دون انتظار انتشار الأوامر العامة.
+    try:
+        global_commands = await bot.tree.sync()
+        print(f"تمت مزامنة {len(global_commands)} أمرًا عالميًا.")
+        for guild in bot.guilds:
+            guild_ref = discord.Object(id=guild.id)
+            bot.tree.copy_global_to(guild=guild_ref)
+            guild_commands = await bot.tree.sync(guild=guild_ref)
+            print(f"تمت مزامنة {len(guild_commands)} أمرًا في السيرفر: {guild.name}")
+    except Exception as exc:
+        print(f"تعذر مزامنة أوامر السلاش: {exc!r}")
+
     print(f"تم تسجيل الدخول باسم {bot.user}")
 
 
@@ -351,8 +362,8 @@ async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: 
     await ctx.reply(f"تم طرد {member.mention} بنجاح. السبب: {reason}", mention_author=False)
 
 
-# !t @العضو 10m السبب
-@bot.command(name="t", help="إعطاء تايم أوت: !t @العضو 10m السبب")
+# t! @العضو 10m السبب — إعطاء تايم أوت
+@bot.command(name="t!", help="إعطاء تايم أوت: t! @العضو 10m السبب")
 @commands.guild_only()
 @commands.has_guild_permissions(moderate_members=True)
 @commands.bot_has_guild_permissions(moderate_members=True)
@@ -381,6 +392,23 @@ async def timeout_member(
         f"تم إعطاء {member.mention} تايم أوت لمدة `{duration_text}`. السبب: {reason}",
         mention_author=False,
     )
+
+
+# تكلم @العضو — فك التايم أوت
+@bot.command(name="تكلم", help="فك التايم أوت عن عضو: تكلم @العضو")
+@commands.guild_only()
+@commands.has_guild_permissions(moderate_members=True)
+@commands.bot_has_guild_permissions(moderate_members=True)
+async def untimeout_member(ctx: commands.Context, member: discord.Member):
+    problem = hierarchy_check(ctx, member)
+    if problem:
+        await ctx.reply(problem, mention_author=False)
+        return
+    if member.timed_out_until is None:
+        await ctx.reply(f"{member.mention} ما عليه تايم أوت حاليًا.", mention_author=False)
+        return
+    await member.timeout(None, reason=f"تم فك التايم بواسطة {ctx.author}")
+    await ctx.reply(f"تم فك التايم عن {member.mention} ويقدر يتكلم الآن.", mention_author=False)
 
 
 @bot.event
@@ -436,7 +464,8 @@ async def help_command(interaction: discord.Interaction):
         "**أوامر الإدارة:**\n"
         "`✈️ @العضو السبب` باند | `/ban`\n"
         "`طرد @العضو السبب` كيك | `/kick`\n"
-        "`!t @العضو 10m السبب` تايم أوت | `/time`\n"
+        "`t! @العضو 10m السبب` إعطاء تايم | `/time`\n"
+        "`تكلم @العضو` فك التايم\n"
         "`ق` قفل الروم | `/lock`\n"
         "`ف` فتح الروم | `/unlock`\n"
         "`-روليت` روليت | `/roulette`\n"
@@ -540,6 +569,16 @@ async def slash_time(interaction: discord.Interaction, member: discord.Member, d
         await interaction.response.send_message("ارفع رتبة البوت فوق رتبة العضو.", ephemeral=True); return
     await member.timeout(parsed, reason=f"{interaction.user} | {reason}")
     await interaction.response.send_message(f"تم إعطاء {member.mention} تايم أوت لمدة {duration}.")
+
+@bot.tree.command(name="تكلم", description="فك التايم أوت عن عضو")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def slash_untimeout(interaction: discord.Interaction, member: discord.Member):
+    if member.timed_out_until is None:
+        await interaction.response.send_message(f"{member.mention} ما عليه تايم أوت حاليًا.", ephemeral=True); return
+    if member.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message("ارفع رتبة البوت فوق رتبة العضو.", ephemeral=True); return
+    await member.timeout(None, reason=f"تم فك التايم بواسطة {interaction.user}")
+    await interaction.response.send_message(f"تم فك التايم عن {member.mention} ويقدر يتكلم الآن.")
 
 @bot.tree.command(name="lock", description="قفل الروم الحالي")
 @app_commands.checks.has_permissions(manage_channels=True)
