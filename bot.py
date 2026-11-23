@@ -1,13 +1,26 @@
 import os
+import re
+from datetime import timedelta
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ضع توكن البوت في متغير البيئة DISCORD_TOKEN داخل منصة الاستضافة.
+# ضع التوكن في متغير البيئة DISCORD_TOKEN داخل منصة الاستضافة.
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    help_command=None
+)
+
+# اسم القناة التي تُرسل فيها رسائل الترحيب تلقائيًا.
+WELCOME_CHANNEL_NAME = "الترحيب"
 
 # الأسئلة والأجوبة مرتبة حسب الأقسام.
 FAQ = {
@@ -69,6 +82,7 @@ FAQ = {
     },
 }
 
+
 def make_embed():
     embed = discord.Embed(
         title="دليل المساعدة والأسئلة الشائعة",
@@ -86,6 +100,7 @@ def make_embed():
     embed.set_footer(text="اضغط على القائمة لاختيار القسم")
     return embed
 
+
 class PrivateQuestionSelect(discord.ui.Select):
     def __init__(self, owner_id: int, category: str):
         self.owner_id = owner_id
@@ -99,7 +114,6 @@ class PrivateQuestionSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
-            custom_id=f"faq:question:{category}",
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -108,12 +122,9 @@ class PrivateQuestionSelect(discord.ui.Select):
             return
         question = list(FAQ[self.category].keys())[int(self.values[0])]
         answer = FAQ[self.category][question]
-        embed = discord.Embed(
-            title=question,
-            description=answer,
-            color=discord.Color.green(),
-        )
+        embed = discord.Embed(title=question, description=answer, color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 class PrivateQuestionView(discord.ui.View):
     def __init__(self, owner_id: int, category: str):
@@ -128,6 +139,7 @@ class PrivateQuestionView(discord.ui.View):
             embed=None,
             view=view,
         )
+
 
 class PublicCategorySelect(discord.ui.Select):
     def __init__(self):
@@ -157,10 +169,12 @@ class PublicCategorySelect(discord.ui.Select):
             ephemeral=True,
         )
 
+
 class PublicFAQView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(PublicCategorySelect())
+
 
 class PrivateCategorySelect(discord.ui.Select):
     def __init__(self, owner_id: int):
@@ -191,25 +205,168 @@ class PrivateCategorySelect(discord.ui.Select):
             view=PrivateQuestionView(self.owner_id, category),
         )
 
+
 class PrivateCategoryView(discord.ui.View):
     def __init__(self, owner_id: int):
         super().__init__(timeout=300)
         self.add_item(PrivateCategorySelect(owner_id))
 
+
+def hierarchy_check(ctx: commands.Context, member: discord.Member) -> str | None:
+    """التحقق من أن العضو المستهدف ليس أعلى من المنفذ أو البوت."""
+    if member.id == ctx.author.id:
+        return "ما تقدر تستخدم الأمر على نفسك."
+    if member.id == ctx.guild.owner_id:
+        return "ما تقدر تستخدم الأمر على مالك السيرفر."
+    if member.id == bot.user.id:
+        return "ما أقدر أطبق الأمر على نفسي."
+    if ctx.author.id != ctx.guild.owner_id and member.top_role >= ctx.author.top_role:
+        return "رتبة العضو أعلى من رتبتك أو مساوية لها."
+    if member.top_role >= ctx.guild.me.top_role:
+        return "رتبة العضو أعلى من رتبة البوت أو مساوية لها. ارفع رتبة البوت."
+    return None
+
+
+def parse_duration(value: str) -> timedelta | None:
+    """أمثلة: 30s، 10m، 2h، 1d. الحد الأقصى 28 يومًا."""
+    match = re.fullmatch(r"(\d+)(s|m|h|d)", value.lower())
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)
+    seconds = amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    if seconds < 1 or seconds > 28 * 86400:
+        return None
+    return timedelta(seconds=seconds)
+
+
 @bot.event
 async def on_ready():
-    # تسجيل القائمة الدائمة ومزامنة أوامر السلاش مرة واحدة عند التشغيل.
     if not getattr(bot, "_faq_initialized", False):
         bot.add_view(PublicFAQView())
         await bot.tree.sync()
         bot._faq_initialized = True
     print(f"تم تسجيل الدخول باسم {bot.user}")
 
+
+# الترحيب التلقائي في قناة اسمها "الترحيب".
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel = discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
+    if channel is None:
+        print(f"لم أجد قناة نصية باسم {WELCOME_CHANNEL_NAME} في السيرفر {member.guild.name}")
+        return
+
+    embed = discord.Embed(
+        title="يا هلا ومرحبا! 🎉",
+        description=f"نورت السيرفر {member.mention}\nنتمنى لك وقتًا ممتعًا معنا ❤️",
+        color=discord.Color.blurple(),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"أنت العضو رقم {member.guild.member_count}")
+    await channel.send(embed=embed)
+
+
+# رد تلقائي بسيط على التحية.
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or message.guild is None:
+        return
+
+    content = message.content.strip().casefold()
+    greetings = ("السلام عليكم", "سلام عليكم", "السلام عليكم ورحمة الله")
+    if any(greeting in content for greeting in greetings):
+        await message.reply("وعليكم السلام ورحمة الله وبركاته 🌷", mention_author=False)
+
+    await bot.process_commands(message)
+
+
+# !✈️ @العضو السبب
+@bot.command(name="✈️", help="حظر عضو من السيرفر: !✈️ @العضو السبب")
+@commands.guild_only()
+@commands.has_guild_permissions(ban_members=True)
+@commands.bot_has_guild_permissions(ban_members=True)
+async def ban_member(ctx: commands.Context, member: discord.Member, *, reason: str = "لم يُذكر سبب"):
+    problem = hierarchy_check(ctx, member)
+    if problem:
+        await ctx.reply(problem, mention_author=False)
+        return
+    await member.ban(reason=f"{ctx.author} | {reason}")
+    await ctx.reply(f"تم حظر {member.mention} بنجاح. السبب: {reason}", mention_author=False)
+
+
+# !طرد @العضو السبب
+@bot.command(name="طرد", help="طرد عضو من السيرفر: !طرد @العضو السبب")
+@commands.guild_only()
+@commands.has_guild_permissions(kick_members=True)
+@commands.bot_has_guild_permissions(kick_members=True)
+async def kick_member(ctx: commands.Context, member: discord.Member, *, reason: str = "لم يُذكر سبب"):
+    problem = hierarchy_check(ctx, member)
+    if problem:
+        await ctx.reply(problem, mention_author=False)
+        return
+    await member.kick(reason=f"{ctx.author} | {reason}")
+    await ctx.reply(f"تم طرد {member.mention} بنجاح. السبب: {reason}", mention_author=False)
+
+
+# !t @العضو 10m السبب
+@bot.command(name="t", help="إعطاء تايم أوت: !t @العضو 10m السبب")
+@commands.guild_only()
+@commands.has_guild_permissions(moderate_members=True)
+@commands.bot_has_guild_permissions(moderate_members=True)
+async def timeout_member(
+    ctx: commands.Context,
+    member: discord.Member,
+    duration_text: str,
+    *,
+    reason: str = "لم يُذكر سبب",
+):
+    problem = hierarchy_check(ctx, member)
+    if problem:
+        await ctx.reply(problem, mention_author=False)
+        return
+
+    duration = parse_duration(duration_text)
+    if duration is None:
+        await ctx.reply(
+            "المدة غير صحيحة. استخدم مثلًا `30s` أو `10m` أو `2h` أو `1d`، والحد الأقصى 28d.",
+            mention_author=False,
+        )
+        return
+
+    await member.timeout(duration, reason=f"{ctx.author} | {reason}")
+    await ctx.reply(
+        f"تم إعطاء {member.mention} تايم أوت لمدة `{duration_text}`. السبب: {reason}",
+        mention_author=False,
+    )
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.MissingPermissions):
+        message = "ما عندك صلاحية استخدام هذا الأمر."
+    elif isinstance(error, commands.BotMissingPermissions):
+        message = "البوت ما عنده الصلاحيات المطلوبة. تأكد من صلاحياته ورتبته."
+    elif isinstance(error, commands.MissingRequiredArgument):
+        message = "ناقصك تحديد العضو أو المدة. راجع طريقة الاستخدام في `/help`."
+    elif isinstance(error, commands.MemberNotFound):
+        message = "ما قدرت ألقى العضو. استخدم منشن للعضو أو معرّفه."
+    elif isinstance(error, commands.NoPrivateMessage):
+        message = "هذا الأمر يعمل داخل السيرفر فقط."
+    else:
+        print(f"حدث خطأ في أمر {ctx.command}: {error}")
+        message = "حدث خطأ أثناء تنفيذ الأمر."
+    await ctx.reply(message, mention_author=False)
+
+
 @bot.tree.command(name="faqpost", description="إرسال رسالة الأسئلة الشائعة في هذه القناة")
 @app_commands.checks.has_permissions(administrator=True)
 async def faqpost(interaction: discord.Interaction):
     await interaction.channel.send(embed=make_embed(), view=PublicFAQView())
     await interaction.response.send_message("تم إرسال قائمة الأسئلة الشائعة.", ephemeral=True)
+
 
 @faqpost.error
 async def faqpost_error(interaction: discord.Interaction, error):
@@ -222,6 +379,7 @@ async def faqpost_error(interaction: discord.Interaction, error):
     else:
         await interaction.response.send_message(message, ephemeral=True)
 
+
 # الأوامر القديمة المعروفة
 @bot.tree.command(name="help", description="عرض أوامر البوت")
 async def help_command(interaction: discord.Interaction):
@@ -232,9 +390,14 @@ async def help_command(interaction: discord.Interaction):
         "`/axe` معلومات Stone Axe\n"
         "`/fireaxe` معلومات Fire Axe\n"
         "`/stoneaxe` معلومات Stone Axe\n"
-        "`/ask` البحث عن إجابة في الأسئلة الشائعة"
+        "`/ask` البحث عن إجابة في الأسئلة الشائعة\n\n"
+        "**أوامر الإدارة (بادئة !):**\n"
+        "`!✈️ @العضو السبب` باند\n"
+        "`!طرد @العضو السبب` كيك\n"
+        "`!t @العضو 10m السبب` تايم أوت\n"
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="axe", description="عرض معلومات صناعة الفأس")
 async def axe(interaction: discord.Interaction):
@@ -243,6 +406,7 @@ async def axe(interaction: discord.Interaction):
         ephemeral=True,
     )
 
+
 @bot.tree.command(name="fireaxe", description="عرض معلومات صناعة Fire Axe")
 async def fireaxe(interaction: discord.Interaction):
     await interaction.response.send_message(
@@ -250,12 +414,14 @@ async def fireaxe(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-@bot.tree.command(name="stoneaxe", description="عرض معلومات صناعة Stone Axe")
+
+@bot.tree.command(name="stoneaxe", description="عرض معلومات Stone Axe")
 async def stoneaxe(interaction: discord.Interaction):
     await interaction.response.send_message(
         "لصناعة Stone Axe تحتاج 3 خشب و2 حجر على Basic Workbench.",
         ephemeral=True,
     )
+
 
 @bot.tree.command(name="ask", description="اسأل عن معلومة موجودة في دليل اللعبة")
 @app_commands.describe(question="اكتب سؤالك")
@@ -273,6 +439,7 @@ async def ask(interaction: discord.Interaction, question: str):
         "ما عندي إجابة مؤكدة لهذا السؤال حاليًا. جرّب اختيار سؤال من قائمة `/faqpost`.",
         ephemeral=True,
     )
+
 
 if not TOKEN:
     raise RuntimeError("لم يتم العثور على DISCORD_TOKEN في متغيرات البيئة.")
