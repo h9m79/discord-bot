@@ -13,14 +13,28 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+async def dynamic_prefix(bot_instance, message):
+    content = message.content
+    if content.startswith("!"):
+        return "!"
+    if content.startswith("-"):
+        return "-"
+    # منع تشغيل التايم بدون ! مع إبقاء بقية الاختصارات بدون بادئة.
+    if content.startswith(("t ", "t\n")):
+        return "!"
+    return ""
+
 bot = commands.Bot(
-    command_prefix="!",
+    command_prefix=dynamic_prefix,
     intents=intents,
     help_command=None
 )
 
 # اسم القناة التي تُرسل فيها رسائل الترحيب تلقائيًا.
 WELCOME_CHANNEL_NAME = "الترحيب"
+WELCOME_CHANNEL_ID = None
+AUTO_ROLE_ID = None
+AUTO_REPLIES = {}
 
 # الأسئلة والأجوبة مرتبة حسب الأقسام.
 FAQ = {
@@ -244,6 +258,7 @@ def parse_duration(value: str) -> timedelta | None:
 async def on_ready():
     if not getattr(bot, "_faq_initialized", False):
         bot.add_view(PublicFAQView())
+        bot.add_view(TicketPanel())
         await bot.tree.sync()
         bot._faq_initialized = True
     print(f"تم تسجيل الدخول باسم {bot.user}")
@@ -252,7 +267,14 @@ async def on_ready():
 # الترحيب التلقائي في قناة اسمها "الترحيب".
 @bot.event
 async def on_member_join(member: discord.Member):
-    channel = discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
+    if AUTO_ROLE_ID:
+        role = member.guild.get_role(AUTO_ROLE_ID)
+        if role:
+            try:
+                await member.add_roles(role, reason="رتبة تلقائية عند دخول العضو")
+            except discord.Forbidden:
+                print("لا يملك البوت صلاحية إدارة الرتب أو أن الرتبة أعلى من رتبته.")
+    channel = member.guild.get_channel(WELCOME_CHANNEL_ID) if WELCOME_CHANNEL_ID else discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
     if channel is None:
         print(f"لم أجد قناة نصية باسم {WELCOME_CHANNEL_NAME} في السيرفر {member.guild.name}")
         return
@@ -274,9 +296,29 @@ async def on_message(message: discord.Message):
         return
 
     content = message.content.strip().casefold()
+
+    # الرد على التحية.
     greetings = ("السلام عليكم", "سلام عليكم", "السلام عليكم ورحمة الله")
     if any(greeting in content for greeting in greetings):
         await message.reply("وعليكم السلام ورحمة الله وبركاته 🌷", mention_author=False)
+
+    # إرسال رابط الماب عند السؤال عنه.
+    map_phrases = ("وين الماب", "رابط الماب", "الماب")
+    if any(phrase in content for phrase in map_phrases):
+        await message.reply(
+            "هذا رابط الماب 🎮\\n"
+            "https://www.roblox.com/share?code=7186cb344aabe74f92750940522ecc31&type=ExperienceDetails&stamp=1795424194120",
+            mention_author=False,
+        )
+
+    # الرد إذا كتب العضو نقطة فقط.
+    if content == ".":
+        await message.reply("منوّر يا عسل 🍯", mention_author=False)
+
+    for keyword, response in AUTO_REPLIES.items():
+        if keyword.casefold() in content:
+            await message.reply(response, mention_author=False)
+            break
 
     await bot.process_commands(message)
 
@@ -391,10 +433,18 @@ async def help_command(interaction: discord.Interaction):
         "`/fireaxe` معلومات Fire Axe\n"
         "`/stoneaxe` معلومات Stone Axe\n"
         "`/ask` البحث عن إجابة في الأسئلة الشائعة\n\n"
-        "**أوامر الإدارة (بادئة !):**\n"
-        "`!✈️ @العضو السبب` باند\n"
-        "`!طرد @العضو السبب` كيك\n"
-        "`!t @العضو 10m السبب` تايم أوت\n"
+        "**أوامر الإدارة:**\n"
+        "`✈️ @العضو السبب` باند | `/ban`\n"
+        "`طرد @العضو السبب` كيك | `/kick`\n"
+        "`!t @العضو 10m السبب` تايم أوت | `/time`\n"
+        "`ق` قفل الروم | `/lock`\n"
+        "`ف` فتح الروم | `/unlock`\n"
+        "`-روليت` روليت | `/roulette`\n"
+        "`-مافيا` مافيا | `/mafia`\n"
+        "`-xo` لعبة XO | `/xo`\n"
+        "`-فعالية اسم` فعالية | `/event`\n"
+        "`/welcome` الترحيب، `/autoreply` الردود، `/autorole` الرتبة\n"
+        "`/ticket-create` إنشاء لوحة التكت، `/ticket-deploy` تنزيلها في روم"
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -439,6 +489,260 @@ async def ask(interaction: discord.Interaction, question: str):
         "ما عندي إجابة مؤكدة لهذا السؤال حاليًا. جرّب اختيار سؤال من قائمة `/faqpost`.",
         ephemeral=True,
     )
+
+
+
+# =========================
+# أوامر الإدارة بالسلاش والاختصار
+# =========================
+
+@bot.command(name="ق")
+@commands.guild_only()
+@commands.has_guild_permissions(manage_channels=True)
+async def lock_prefix(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
+    await ctx.reply("🔒 تم قفل الروم.", mention_author=False)
+
+@bot.command(name="ف")
+@commands.guild_only()
+@commands.has_guild_permissions(manage_channels=True)
+async def unlock_prefix(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=None)
+    await ctx.reply("🔓 تم فتح الروم.", mention_author=False)
+
+@bot.tree.command(name="ban", description="حظر عضو من السيرفر")
+@app_commands.checks.has_permissions(ban_members=True)
+async def slash_ban(interaction: discord.Interaction, member: discord.Member, reason: str = "لم يذكر سبب"):
+    if member.id == interaction.guild.owner_id or member.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
+        await interaction.response.send_message("لا يمكنك حظر هذا العضو بسبب رتبة العضو.", ephemeral=True); return
+    if member.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message("ارفع رتبة البوت فوق رتبة العضو.", ephemeral=True); return
+    await member.ban(reason=f"{interaction.user} | {reason}")
+    await interaction.response.send_message(f"✈️ تم حظر {member.mention}.")
+
+@bot.tree.command(name="kick", description="طرد عضو من السيرفر")
+@app_commands.checks.has_permissions(kick_members=True)
+async def slash_kick(interaction: discord.Interaction, member: discord.Member, reason: str = "لم يذكر سبب"):
+    if member.id == interaction.guild.owner_id or (member.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id):
+        await interaction.response.send_message("لا يمكنك طرد هذا العضو بسبب رتبة العضو.", ephemeral=True); return
+    if member.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message("ارفع رتبة البوت فوق رتبة العضو.", ephemeral=True); return
+    await member.kick(reason=f"{interaction.user} | {reason}")
+    await interaction.response.send_message(f"تم طرد {member.mention}.")
+
+@bot.tree.command(name="time", description="إعطاء عضو تايم أوت")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def slash_time(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "لم يذكر سبب"):
+    parsed = parse_duration(duration)
+    if parsed is None:
+        await interaction.response.send_message("اكتب المدة مثل 10m أو 2h أو 1d (الحد 28d).", ephemeral=True); return
+    if member.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message("ارفع رتبة البوت فوق رتبة العضو.", ephemeral=True); return
+    await member.timeout(parsed, reason=f"{interaction.user} | {reason}")
+    await interaction.response.send_message(f"تم إعطاء {member.mention} تايم أوت لمدة {duration}.")
+
+@bot.tree.command(name="lock", description="قفل الروم الحالي")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def slash_lock(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
+    await interaction.response.send_message("🔒 تم قفل الروم.")
+
+@bot.tree.command(name="unlock", description="فتح الروم الحالي")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def slash_unlock(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=None)
+    await interaction.response.send_message("🔓 تم فتح الروم.")
+
+
+# إعدادات الترحيب والردود والرتبة التلقائية
+@bot.tree.command(name="welcome", description="تحديد روم الترحيب التلقائي")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def slash_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
+    global WELCOME_CHANNEL_ID
+    WELCOME_CHANNEL_ID = channel.id
+    await interaction.response.send_message(f"تم ضبط روم الترحيب على {channel.mention}.", ephemeral=True)
+
+@bot.command(name="ترحيب")
+@commands.has_guild_permissions(manage_guild=True)
+async def prefix_welcome(ctx, channel: discord.TextChannel):
+    global WELCOME_CHANNEL_ID
+    WELCOME_CHANNEL_ID = channel.id
+    await ctx.reply(f"تم ضبط روم الترحيب على {channel.mention}.", mention_author=False)
+
+@bot.tree.command(name="autorole", description="تحديد الرتبة التي يحصل عليها العضو عند دخوله")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def slash_autorole(interaction: discord.Interaction, role: discord.Role):
+    global AUTO_ROLE_ID
+    if role >= interaction.guild.me.top_role:
+        await interaction.response.send_message("ارفع رتبة البوت فوق الرتبة المطلوبة.", ephemeral=True); return
+    AUTO_ROLE_ID = role.id
+    await interaction.response.send_message(f"تم ضبط الرتبة التلقائية: {role.mention}.", ephemeral=True)
+
+@bot.command(name="رتبة")
+@commands.has_guild_permissions(manage_roles=True)
+async def prefix_autorole(ctx, role: discord.Role):
+    global AUTO_ROLE_ID
+    if role >= ctx.guild.me.top_role:
+        await ctx.reply("ارفع رتبة البوت فوق الرتبة المطلوبة.", mention_author=False); return
+    AUTO_ROLE_ID = role.id
+    await ctx.reply(f"تم ضبط الرتبة التلقائية: {role.mention}.", mention_author=False)
+
+@bot.tree.command(name="autoreply", description="إضافة رد تلقائي لكلمة أو عبارة")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def slash_autoreply(interaction: discord.Interaction, keyword: str, response: str):
+    AUTO_REPLIES[keyword.strip()] = response[:1800]
+    await interaction.response.send_message(f"تم إضافة رد تلقائي لعبارة **{keyword}**.", ephemeral=True)
+
+@bot.command(name="رد")
+@commands.has_guild_permissions(manage_guild=True)
+async def prefix_autoreply(ctx, keyword: str, *, response: str):
+    AUTO_REPLIES[keyword.strip()] = response[:1800]
+    await ctx.reply(f"تم إضافة رد تلقائي لعبارة **{keyword}**.", mention_author=False)
+
+
+# =========================
+# ألعاب وفعاليات: حد أقصى 15 مشاركًا
+# =========================
+
+active_lobbies = {}
+
+class ActivityView(discord.ui.View):
+    def __init__(self, kind: str, creator_id: int):
+        super().__init__(timeout=None)
+        self.kind = kind
+        self.creator_id = creator_id
+        self.players = []
+        self.started = False
+        self.message = None
+
+    async def refresh(self, interaction):
+        label = f"المشاركون: {len(self.players)}/15"
+        embed = discord.Embed(title=f"🎮 {self.kind}", description=f"{label}\n" + ("\n".join(f"• <@{x}>" for x in self.players) if self.players else "لا يوجد مشاركون بعد"), color=discord.Color.blurple())
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="دخول اللعبة", style=discord.ButtonStyle.success, custom_id="activity:join")
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.started:
+            await interaction.response.send_message("اللعبة بدأت بالفعل.", ephemeral=True); return
+        if interaction.user.id in self.players:
+            await interaction.response.send_message("أنت مسجل بالفعل.", ephemeral=True); return
+        if len(self.players) >= 15:
+            await interaction.response.send_message("اكتمل العدد (15/15).", ephemeral=True); return
+        self.players.append(interaction.user.id)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="الخروج من اللعبة", style=discord.ButtonStyle.secondary, custom_id="activity:leave")
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.players:
+            await interaction.response.send_message("أنت غير مسجل.", ephemeral=True); return
+        self.players.remove(interaction.user.id)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="بدء اللعبة", style=discord.ButtonStyle.primary, custom_id="activity:start")
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.creator_id and not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("بدء اللعبة للمنظم أو الإدارة فقط.", ephemeral=True); return
+        if self.started:
+            await interaction.response.send_message("اللعبة بدأت بالفعل.", ephemeral=True); return
+        if len(self.players) < 2:
+            await interaction.response.send_message("تحتاج لاعبين اثنين على الأقل.", ephemeral=True); return
+        if self.kind == "المافيا" and len(self.players) < 4:
+            await interaction.response.send_message("لعبة المافيا تحتاج 4 لاعبين على الأقل.", ephemeral=True); return
+        self.started = True
+        if self.kind == "الروليت":
+            winner = interaction.guild.get_member(__import__('random').choice(self.players))
+            await interaction.response.edit_message(content=f"🎯 بدأت الروليت! الفائز العشوائي: {winner.mention}", view=self)
+        elif self.kind == "المافيا":
+            import random
+            count = len(self.players)
+            mafia_count = 2 if count >= 7 else 1
+            roles = ["مافيا"] * mafia_count + ["محقق", "دكتور"] + ["مواطن"] * (count-mafia_count-2)
+            random.shuffle(roles)
+            for uid, role in zip(self.players, roles):
+                try: await interaction.guild.get_member(uid).send(f"🎭 دورك في لعبة المافيا: **{role}**. لا تكشف دورك.")
+                except (discord.Forbidden, AttributeError): pass
+            await interaction.response.edit_message(content=f"🕵️ بدأت لعبة المافيا مع {count} لاعبين. تم إرسال الأدوار على الخاص؛ تبدأ جولة الليل بإدارة المنظم.", view=self)
+        else:
+            await interaction.response.edit_message(content=f"بدأت فعالية {self.kind} بمشاركة {len(self.players)} لاعبًا!", view=self)
+
+    @discord.ui.button(label="إنهاء اللعبة", style=discord.ButtonStyle.danger, custom_id="activity:end")
+    async def end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.creator_id and not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("إنهاء اللعبة للمنظم أو الإدارة فقط.", ephemeral=True); return
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(content=f"⛔ انتهت {self.kind}.", view=self)
+
+async def create_activity(interaction: discord.Interaction, kind: str):
+    view = ActivityView(kind, interaction.user.id)
+    view.players.append(interaction.user.id)
+    embed = discord.Embed(title=f"🎮 {kind}", description=f"المشاركون: 1/15\n• {interaction.user.mention}\n\nاضغط دخول اللعبة للمشاركة.", color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name="roulette", description="إنشاء روليت عشوائية بحد أقصى 15 مشاركًا")
+async def slash_roulette(interaction: discord.Interaction): await create_activity(interaction, "الروليت")
+
+@bot.command(name="روليت")
+async def prefix_roulette(ctx):
+    view = ActivityView("الروليت", ctx.author.id); view.players.append(ctx.author.id)
+    embed = discord.Embed(title="🎯 الروليت", description=f"المشاركون: 1/15\n• {ctx.author.mention}", color=discord.Color.blurple())
+    await ctx.send(embed=embed, view=view)
+
+@bot.tree.command(name="mafia", description="إنشاء لعبة مافيا بحد أقصى 15 مشاركًا")
+async def slash_mafia(interaction: discord.Interaction): await create_activity(interaction, "المافيا")
+
+@bot.command(name="مافيا")
+async def prefix_mafia(ctx):
+    view = ActivityView("المافيا", ctx.author.id); view.players.append(ctx.author.id)
+    embed = discord.Embed(title="🕵️ المافيا", description=f"المشاركون: 1/15\n• {ctx.author.mention}", color=discord.Color.blurple())
+    await ctx.send(embed=embed, view=view)
+
+@bot.tree.command(name="xo", description="إنشاء فعالية XO بحد أقصى 15 مشاركًا")
+async def slash_xo(interaction: discord.Interaction): await create_activity(interaction, "XO")
+
+@bot.command(name="xo")
+async def prefix_xo(ctx):
+    view = ActivityView("XO", ctx.author.id); view.players.append(ctx.author.id)
+    await ctx.send(embed=discord.Embed(title="❎⭕ فعالية XO", description=f"المشاركون: 1/15\n• {ctx.author.mention}", color=discord.Color.blurple()), view=view)
+
+@bot.tree.command(name="event", description="إنشاء فعالية عامة بحد أقصى 15 مشاركًا")
+@app_commands.describe(title="اسم الفعالية")
+async def slash_event(interaction: discord.Interaction, title: str): await create_activity(interaction, title[:80])
+
+@bot.command(name="فعالية")
+async def prefix_event(ctx, *, title="فعالية جديدة"):
+    view = ActivityView(title[:80], ctx.author.id); view.players.append(ctx.author.id)
+    await ctx.send(embed=discord.Embed(title=f"🎉 {title[:80]}", description=f"المشاركون: 1/15\n• {ctx.author.mention}", color=discord.Color.blurple()), view=view)
+
+# =========================
+# نظام التذاكر - Slash فقط
+# =========================
+
+class TicketPanel(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="فتح تذكرة", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="ticket:open")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        existing = discord.utils.get(guild.text_channels, name=f"ticket-{interaction.user.id}")
+        if existing:
+            await interaction.response.send_message(f"لديك تذكرة مفتوحة: {existing.mention}", ephemeral=True); return
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
+        channel = await guild.create_text_channel(f"ticket-{interaction.user.id}", overwrites=overwrites, reason="فتح تذكرة دعم")
+        await channel.send(f"مرحبًا {interaction.user.mention}، اكتب طلبك هنا. سيقوم فريق الإدارة بمساعدتك.")
+        await interaction.response.send_message(f"تم فتح تذكرتك: {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="ticket-create", description="إنشاء لوحة تذاكر في الروم الحالي")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_create(interaction: discord.Interaction):
+    embed = discord.Embed(title="🎫 الدعم الفني", description="اضغط الزر بالأسفل لفتح تذكرة خاصة مع الإدارة.", color=discord.Color.blurple())
+    await interaction.channel.send(embed=embed, view=TicketPanel())
+    await interaction.response.send_message("تم إنشاء لوحة التذاكر في هذا الروم.", ephemeral=True)
+
+@bot.tree.command(name="ticket-deploy", description="تنزيل لوحة التذاكر في روم تختاره")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_deploy(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(title="🎫 الدعم الفني", description="اضغط الزر بالأسفل لفتح تذكرة خاصة مع الإدارة.", color=discord.Color.blurple())
+    await channel.send(embed=embed, view=TicketPanel())
+    await interaction.response.send_message(f"تم تنزيل لوحة التذاكر في {channel.mention}.", ephemeral=True)
 
 
 if not TOKEN:
