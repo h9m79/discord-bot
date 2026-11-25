@@ -630,15 +630,29 @@ async def event_cmd(ctx, *, title="فعالية جديدة"):
 # Ticket commands: slash only
 @bot.tree.command(name="ticket-create", description="إنشاء لوحة تذاكر في الروم الحالي")
 @app_commands.checks.has_permissions(manage_guild=True)
-async def ticket_create(interaction):
-    await send_ticket_panel(interaction.channel)
-    await interaction.response.send_message("تم إنشاء لوحة التذاكر.",ephemeral=True)
+async def ticket_create(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await send_ticket_panel(interaction.channel)
+        await interaction.followup.send("✅ تم إنشاء لوحة التذاكر في هذا الروم.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ ما عندي صلاحية في هذا الروم. فعّل للبوت View Channel وSend Messages وEmbed Links.", ephemeral=True)
+    except Exception as error:
+        print("Ticket panel error:", repr(error))
+        await interaction.followup.send("❌ تعذر إنشاء اللوحة. راجع سجل الاستضافة لمعرفة الخطأ.", ephemeral=True)
 
 @bot.tree.command(name="ticket-deploy", description="تنزيل لوحة التذاكر في روم تختاره")
 @app_commands.checks.has_permissions(manage_guild=True)
-async def ticket_deploy(interaction, channel: discord.TextChannel):
-    await send_ticket_panel(channel)
-    await interaction.response.send_message(f"تم تنزيل لوحة التذاكر في {channel.mention}.",ephemeral=True)
+async def ticket_deploy(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await send_ticket_panel(channel)
+        await interaction.followup.send(f"✅ تم تنزيل لوحة التذاكر في {channel.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ ما عندي صلاحية في الروم المحدد. فعّل للبوت View Channel وSend Messages وEmbed Links.", ephemeral=True)
+    except Exception as error:
+        print("Ticket deploy error:", repr(error))
+        await interaction.followup.send("❌ تعذر تنزيل اللوحة. راجع سجل الاستضافة لمعرفة الخطأ.", ephemeral=True)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -646,9 +660,4 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions): msg="ما عندك صلاحية استخدام هذا الأمر."
     elif isinstance(error, commands.BotMissingPermissions): msg="البوت ما عنده الصلاحيات المطلوبة أو رتبته منخفضة."
     elif isinstance(error, commands.MissingRequiredArgument): msg="ناقصك تحديد العضو أو المدة. راجع /help."
-    elif isinstance(error, commands.MemberNotFound): msg="ما قدرت ألقى العضو. استخدم منشن أو معرّف العضو."
-    else:
-        print("Command error:", repr(error)); msg="حدث خطأ أثناء تنفيذ الأمر."
-    await ctx.reply(msg, mention_author=False)
-
-bot.run(TOKEN)
+    elif isinstance(error, commands
