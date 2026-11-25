@@ -660,4 +660,9 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions): msg="ما عندك صلاحية استخدام هذا الأمر."
     elif isinstance(error, commands.BotMissingPermissions): msg="البوت ما عنده الصلاحيات المطلوبة أو رتبته منخفضة."
     elif isinstance(error, commands.MissingRequiredArgument): msg="ناقصك تحديد العضو أو المدة. راجع /help."
-    elif isinstance(error, commands
+    elif isinstance(error, commands.MemberNotFound): msg="ما قدرت ألقى العضو. استخدم منشن أو معرّف العضو."
+    else:
+        print("Command error:", repr(error)); msg="حدث خطأ أثناء تنفيذ الأمر."
+    await ctx.reply(msg, mention_author=False)
+
+bot.run(TOKEN)
